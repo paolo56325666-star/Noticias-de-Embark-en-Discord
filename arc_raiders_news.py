@@ -1,12 +1,11 @@
 import os
 import json
 import html
-import re
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import quote, urlparse, parse_qs
+from urllib.parse import quote, urlparse
 
 # ============================================================
 # CONFIGURACIÓN
@@ -16,13 +15,17 @@ WEBHOOK_URL = os.environ["DISCORD_WEBHOOK"]
 
 STATE_FILE = "state.json"
 
-GOOGLE_NEWS_URL = (
-    "https://news.google.com/rss/search?"
-    "q=" + quote('site:arcraiders.com/news') +
-    "&hl=es-419&gl=UY&ceid=UY:es-419"
+SEARCH_QUERY = quote(
+    'site:arcraiders.com/news "ARC Raiders"'
 )
 
-ALLOWED_DOMAIN = "arcraiders.com"
+GOOGLE_NEWS_URL = (
+    "https://news.google.com/rss/search?"
+    f"q={SEARCH_QUERY}"
+    "&hl=es-419"
+    "&gl=UY"
+    "&ceid=UY:es-419"
+)
 
 HEADERS = {
     "User-Agent": (
@@ -34,27 +37,48 @@ HEADERS = {
     )
 }
 
+ALLOWED_DOMAIN = "arcraiders.com"
+
 
 # ============================================================
 # ESTADO
 # ============================================================
 
 def load_state():
+
     if not os.path.exists(STATE_FILE):
         return None
 
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as file:
+
+        with open(
+            STATE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
             data = json.load(file)
+
             return data.get("latest_guid")
 
     except Exception as error:
-        print("No se pudo leer state.json:", error)
+
+        print(
+            "No se pudo leer state.json:",
+            error
+        )
+
         return None
 
 
 def save_state(guid):
-    with open(STATE_FILE, "w", encoding="utf-8") as file:
+
+    with open(
+        STATE_FILE,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
         json.dump(
             {
                 "latest_guid": guid,
@@ -69,11 +93,43 @@ def save_state(guid):
 
 
 # ============================================================
-# GOOGLE NEWS
+# COMPROBAR SI UNA URL ES DE ARC RAIDERS
+# ============================================================
+
+def is_arc_raiders_url(url):
+
+    if not url:
+        return False
+
+    try:
+
+        parsed = urlparse(url)
+
+        hostname = (
+            parsed.hostname or ""
+        ).lower()
+
+        return (
+            hostname == "arcraiders.com"
+            or hostname.endswith(
+                ".arcraiders.com"
+            )
+        )
+
+    except Exception:
+
+        return False
+
+
+# ============================================================
+# OBTENER NOTICIAS DESDE GOOGLE NEWS
 # ============================================================
 
 def get_google_news():
-    print("Consultando Google News RSS...")
+
+    print(
+        "Consultando Google News RSS..."
+    )
 
     response = requests.get(
         GOOGLE_NEWS_URL,
@@ -88,17 +144,38 @@ def get_google_news():
         response.status_code
     )
 
-    root = ET.fromstring(response.content)
+    root = ET.fromstring(
+        response.content
+    )
+
+    items = root.findall(
+        "./channel/item"
+    )
+
+    print(
+        "Elementos encontrados en RSS:",
+        len(items)
+    )
 
     articles = []
 
-    for item in root.findall("./channel/item"):
+    for item in items:
 
-        title_element = item.find("title")
-        link_element = item.find("link")
-        guid_element = item.find("guid")
-        date_element = item.find("pubDate")
-        source_element = item.find("source")
+        title_element = item.find(
+            "title"
+        )
+
+        link_element = item.find(
+            "link"
+        )
+
+        guid_element = item.find(
+            "guid"
+        )
+
+        date_element = item.find(
+            "pubDate"
+        )
 
         if (
             title_element is None
@@ -124,113 +201,125 @@ def get_google_news():
             date_element.text or ""
         ).strip()
 
-        source_url = ""
-
-        if source_element is not None:
-            source_url = (
-                source_element.attrib.get(
-                    "url",
-                    ""
-                )
-                .strip()
-            )
-
-        # ----------------------------------------------------
-        # Solo aceptamos ARC Raiders / Embark
-        # ----------------------------------------------------
-
-        if ALLOWED_DOMAIN not in source_url.lower():
-
-            # Algunas versiones del RSS pueden no incluir
-            # correctamente el atributo source.
-            # En ese caso intentamos detectar el dominio
-            # dentro de la descripción/enlace.
-            description_element = item.find(
-                "description"
-            )
-
-            description = ""
-
-            if description_element is not None:
-                description = (
-                    description_element.text or ""
-                )
-
-            combined = (
-                google_link
-                + " "
-                + description
-                + " "
-                + title
-            ).lower()
-
-            if "arcraiders.com" not in combined:
-                continue
-
         # ----------------------------------------------------
         # Fecha
         # ----------------------------------------------------
 
         try:
+
             date = parsedate_to_datetime(
                 pub_date
             )
 
         except Exception:
+
             print(
-                "Fecha inválida:",
+                "No se pudo interpretar fecha:",
                 pub_date
             )
+
+            continue
+
+        # ----------------------------------------------------
+        # Resolver el enlace de Google
+        # ----------------------------------------------------
+
+        real_url = resolve_google_url(
+            google_link
+        )
+
+        print(
+            "Noticia encontrada:",
+            title
+        )
+
+        print(
+            "URL:",
+            real_url
+        )
+
+        # ----------------------------------------------------
+        # SOLO aceptar arcraiders.com
+        # ----------------------------------------------------
+
+        if not is_arc_raiders_url(
+            real_url
+        ):
+
+            print(
+                "Descartada: no pertenece "
+                "a arcraiders.com"
+            )
+
             continue
 
         # ----------------------------------------------------
         # Limpiar título
         # ----------------------------------------------------
 
-        title = html.unescape(title)
+        title = html.unescape(
+            title
+        )
 
-        # Google suele añadir " - ARC Raiders"
-        title = re.sub(
-            r"\s+-\s+ARC Raiders\s*$",
-            "",
-            title,
-            flags=re.IGNORECASE
-        ).strip()
+        # Google puede añadir el nombre
+        # del sitio al final.
+
+        if " - ARC Raiders" in title:
+
+            title = title.replace(
+                " - ARC Raiders",
+                ""
+            ).strip()
 
         articles.append(
             {
                 "title": title,
-                "google_link": google_link,
+                "url": real_url,
                 "guid": guid,
-                "date": date,
-                "source_url": source_url
+                "date": date
             }
         )
 
-    # Más reciente primero
+    # --------------------------------------------------------
+    # Eliminar duplicados
+    # --------------------------------------------------------
+
+    unique = {}
+
+    for article in articles:
+
+        unique[
+            article["url"]
+        ] = article
+
+    articles = list(
+        unique.values()
+    )
+
+    # --------------------------------------------------------
+    # Ordenar por fecha
+    # --------------------------------------------------------
+
     articles.sort(
         key=lambda article: article["date"],
         reverse=True
     )
 
-    # Eliminar duplicados
-    unique = {}
+    print(
+        "Noticias oficiales encontradas:",
+        len(articles)
+    )
 
-    for article in articles:
-        unique[article["guid"]] = article
-
-    return list(unique.values())
+    return articles
 
 
 # ============================================================
-# OBTENER URL REAL DE ARC RAIDERS
+# RESOLVER ENLACE DE GOOGLE NEWS
 # ============================================================
 
-def get_real_url(google_url):
-    """
-    Google News utiliza enlaces intermedios.
-    Intentamos obtener la URL oficial.
-    """
+def resolve_google_url(
+    google_url
+):
 
     try:
 
@@ -243,12 +332,16 @@ def get_real_url(google_url):
 
         final_url = response.url
 
-        if ALLOWED_DOMAIN in final_url.lower():
+        if is_arc_raiders_url(
+            final_url
+        ):
+
             return final_url
 
     except Exception as error:
+
         print(
-            "No se pudo resolver la URL:",
+            "No se pudo resolver enlace:",
             error
         )
 
@@ -256,61 +349,145 @@ def get_real_url(google_url):
 
 
 # ============================================================
-# DESCRIPCIÓN
+# OBTENER IMAGEN DE LA NOTICIA
 # ============================================================
 
-def clean_description(text):
+def get_article_image(url):
 
-    if not text:
-        return ""
+    try:
 
-    text = html.unescape(text)
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=30
+        )
 
-    # Eliminar HTML
-    text = re.sub(
-        r"<[^>]+>",
-        " ",
-        text
-    )
+        if response.status_code != 200:
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    ).strip()
+            return None
 
-    if len(text) > 600:
-        text = text[:597] + "..."
+        # Buscamos og:image directamente
+        # sin depender de BeautifulSoup.
 
-    return text
+        text = response.text
+
+        marker = (
+            'property="og:image"'
+        )
+
+        position = text.find(
+            marker
+        )
+
+        if position == -1:
+
+            marker = (
+                "property='og:image'"
+            )
+
+            position = text.find(
+                marker
+            )
+
+        if position == -1:
+
+            return None
+
+        section = text[
+            position:
+            position + 1000
+        ]
+
+        # content="..."
+        content_marker = (
+            'content="'
+        )
+
+        start = section.find(
+            content_marker
+        )
+
+        if start == -1:
+
+            content_marker = (
+                "content='"
+            )
+
+            start = section.find(
+                content_marker
+            )
+
+        if start == -1:
+
+            return None
+
+        start += len(
+            content_marker
+        )
+
+        end = section.find(
+            '"',
+            start
+        )
+
+        if end == -1:
+
+            end = section.find(
+                "'",
+                start
+            )
+
+        if end == -1:
+
+            return None
+
+        image = section[
+            start:end
+        ].strip()
+
+        return image or None
+
+    except Exception as error:
+
+        print(
+            "No se pudo obtener imagen:",
+            error
+        )
+
+        return None
 
 
 # ============================================================
-# DISCORD
+# ENVIAR A DISCORD
 # ============================================================
 
 def send_discord(article):
 
-    real_url = get_real_url(
-        article["google_link"]
+    image = get_article_image(
+        article["url"]
     )
 
-    title = article["title"]
-
-    date = article["date"].astimezone(
+    date = article[
+        "date"
+    ].astimezone(
         timezone.utc
-    ).strftime("%d/%m/%Y %H:%M UTC")
+    )
 
     embed = {
-        "title": "🟡 NUEVA NOTICIA — ARC RAIDERS",
 
-        "description": (
-            f"## {title}\n\n"
-            f"📅 **Publicada:** {date}\n\n"
-            f"🔗 [Leer noticia oficial]({real_url})"
+        "title": (
+            "🟡 NUEVA NOTICIA — ARC RAIDERS"
         ),
 
-        "url": real_url,
+        "description": (
+            f"## {article['title']}\n\n"
+            f"📅 **Publicado:** "
+            f"{date.strftime('%d/%m/%Y %H:%M UTC')}\n\n"
+            f"🔗 [Leer noticia oficial]"
+            f"({article['url']})"
+        ),
+
+        "url": article["url"],
 
         "color": 0xF5C400,
 
@@ -319,17 +496,22 @@ def send_discord(article):
         },
 
         "footer": {
-            "text": "El Talero Server • ARC Raiders News"
+            "text": (
+                "El Talero Server • ARC Raiders News"
+            )
         },
 
-        "timestamp": article[
-            "date"
-        ].astimezone(
-            timezone.utc
-        ).isoformat()
+        "timestamp": date.isoformat()
     }
 
+    if image:
+
+        embed["image"] = {
+            "url": image
+        }
+
     payload = {
+
         "username": "ARC Raiders News",
 
         "embeds": [
@@ -346,14 +528,13 @@ def send_discord(article):
     response.raise_for_status()
 
     print(
-        "Noticia enviada correctamente a Discord:"
+        "✅ Enviada a Discord:",
+        article["title"]
     )
-
-    print(title)
 
 
 # ============================================================
-# PRINCIPAL
+# PROGRAMA PRINCIPAL
 # ============================================================
 
 def main():
@@ -373,38 +554,34 @@ def main():
     articles = get_google_news()
 
     if not articles:
-        raise RuntimeError(
-            "Google News no devolvió ninguna "
-            "noticia oficial de ARC Raiders."
-        )
 
-    print(
-        f"Noticias oficiales encontradas: "
-        f"{len(articles)}"
-    )
+        raise RuntimeError(
+            "No se encontraron noticias "
+            "oficiales de ARC Raiders."
+        )
 
     latest = articles[0]
 
     print(
-        "Última noticia:",
+        "Última noticia oficial:",
         latest["title"]
     )
 
     print(
-        "GUID:",
-        latest["guid"]
+        "URL:",
+        latest["url"]
     )
 
     previous_guid = load_state()
 
-    # --------------------------------------------------------
-    # Primera ejecución
-    # --------------------------------------------------------
+    # ========================================================
+    # PRIMERA EJECUCIÓN
+    # ========================================================
 
     if previous_guid is None:
 
         print(
-            "Primera ejecución detectada."
+            "Primera ejecución."
         )
 
         print(
@@ -416,11 +593,15 @@ def main():
             latest["guid"]
         )
 
+        print(
+            "✅ Estado guardado."
+        )
+
         return
 
-    # --------------------------------------------------------
-    # No hay novedades
-    # --------------------------------------------------------
+    # ========================================================
+    # SIN NOVEDADES
+    # ========================================================
 
     if latest["guid"] == previous_guid:
 
@@ -430,15 +611,16 @@ def main():
 
         return
 
-    # --------------------------------------------------------
-    # Buscar todas las novedades
-    # --------------------------------------------------------
+    # ========================================================
+    # ENCONTRAR NOVEDADES
+    # ========================================================
 
     new_articles = []
 
     for article in articles:
 
         if article["guid"] == previous_guid:
+
             break
 
         new_articles.append(
@@ -449,13 +631,13 @@ def main():
     new_articles.reverse()
 
     print(
-        "Noticias nuevas:",
+        "Nuevas noticias:",
         len(new_articles)
     )
 
-    # --------------------------------------------------------
-    # Publicar
-    # --------------------------------------------------------
+    # ========================================================
+    # PUBLICAR
+    # ========================================================
 
     for article in new_articles:
 
@@ -463,9 +645,9 @@ def main():
             article
         )
 
-    # --------------------------------------------------------
-    # Actualizar estado
-    # --------------------------------------------------------
+    # ========================================================
+    # GUARDAR ESTADO
+    # ========================================================
 
     save_state(
         latest["guid"]
@@ -476,13 +658,13 @@ def main():
     )
 
     print(
-        "Proceso finalizado correctamente."
+        "✅ PROCESO FINALIZADO CORRECTAMENTE"
     )
 
     print(
-        "======================================"
-    )
+        "======================================")
 
 
 if __name__ == "__main__":
+
     main()
