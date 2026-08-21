@@ -34,15 +34,12 @@ jobs:
       - name: Consultar noticias
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-
         run: |
           python arc_raiders_news.py
 
       - name: Guardar estado
         run: |
-
           git config user.name "ARC Raiders News Bot"
-
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add state.json
